@@ -296,37 +296,14 @@
             const lines = text.split('\n').filter(line => line.trim().length > 0);
             const tableData = [];
             
-            // Use fixed column headers instead of trying to detect them
-            const headers = ['Workstations', 'User', 'Make', 'Serial', 'Model', 'OS', 'Age', 'Purchased', 'Expires'];
+            // Use fixed column headers for combined servers and workstations
+            const headers = ['Asset ID', 'User', 'Make', 'Serial', 'Model', 'OS', 'Age', 'Purchased', 'Expires'];
             tableData.push(headers);
             
-            // Find where the actual data starts by looking for lines with asset IDs (IML- pattern)
-            let dataStartIndex = -1;
+            let currentSection = null; // 'servers' or 'workstations'
+            
+            // Process each line to find data rows
             for (let i = 0; i < lines.length; i++) {
-                const line = lines[i];
-                if (line.includes('IML-') || line.includes('ILM-')) {
-                    dataStartIndex = i;
-                    break;
-                }
-            }
-            
-            if (dataStartIndex === -1) {
-                // Fallback: look for Dell devices
-                for (let i = 0; i < lines.length; i++) {
-                    const line = lines[i].toLowerCase();
-                    if (line.includes('dell') && (line.includes('optiplex') || line.includes('latitude'))) {
-                        dataStartIndex = i;
-                        break;
-                    }
-                }
-            }
-            
-            if (dataStartIndex === -1) {
-                return parseAutoDetectColumns(lines, headers);
-            }
-            
-            // Process data rows
-            for (let i = dataStartIndex; i < lines.length; i++) {
                 const line = lines[i].trim();
                 if (line.length === 0) continue;
                 
@@ -337,24 +314,212 @@
                     continue;
                 }
                 
-                const rowData = extractColumnsFromLine(line);
-                if (rowData.length >= 6) { // At least 6 columns to be considered a valid data row
-                    // Ensure we have exactly 9 columns to match headers
-                    while (rowData.length < headers.length) {
-                        rowData.push('');
+                // Detect section headers
+                const lowerLine = line.toLowerCase();
+                if (lowerLine.includes('servers') && (lowerLine.includes('make') || lowerLine.includes('serial'))) {
+                    currentSection = 'servers';
+                    continue;
+                }
+                if (lowerLine.includes('workstations') && (lowerLine.includes('user') || lowerLine.includes('make'))) {
+                    currentSection = 'workstations';
+                    continue;
+                }
+                
+                // Look for actual data rows (containing asset IDs or Dell/Microsoft)
+                if (isDataRow(line)) {
+                    let rowData;
+                    
+                    if (currentSection === 'servers' || isServerRow(line)) {
+                        rowData = parseServerRow(line);
+                    } else {
+                        rowData = parseWorkstationRow(line);
                     }
-                    if (rowData.length > headers.length) {
-                        rowData.splice(headers.length);
+                    
+                    if (rowData && rowData.length >= 6) {
+                        // Ensure we have exactly 9 columns to match headers
+                        while (rowData.length < headers.length) {
+                            rowData.push('');
+                        }
+                        if (rowData.length > headers.length) {
+                            rowData.splice(headers.length);
+                        }
+                        tableData.push(rowData);
                     }
-                    tableData.push(rowData);
                 }
             }
             
             return tableData;
         }
 
+        function isDataRow(line) {
+            // Check if line contains asset IDs or manufacturer names
+            return line.includes('DFH-') || line.includes('IML-') || line.includes('ILM-') || 
+                   line.includes('WBH-') || line.includes('TDC-') ||
+                   (line.includes('Dell') && (line.includes('OptiPlex') || line.includes('Latitude') || line.includes('XPS') || line.includes('PowerEdge'))) ||
+                   (line.includes('Microsoft') && line.includes('Surface'));
+        }
+
+        function isServerRow(line) {
+            // Server rows typically have PowerEdge, VMware, or server-specific models
+            return line.includes('PowerEdge') || line.includes('VMware') || 
+                   (line.includes('Dell') && !line.includes('Windows'));
+        }
+
+        function parseServerRow(line) {
+            // Parse server data: Asset ID, Make, Serial, Model, Age, Purchased, Expires
+            // Convert to: Asset ID, User, Make, Serial, Model, OS, Age, Purchased, Expires
+            const columns = [];
+            const words = line.split(/\s+/);
+            let i = 0;
+            
+            // Column 1: Asset ID (DFH-, IML-, etc.)
+            let assetId = '';
+            while (i < words.length && !words[i].match(/^(Dell|Microsoft|HP|Lenovo)$/)) {
+                assetId += (assetId ? ' ' : '') + words[i];
+                i++;
+            }
+            columns.push(assetId.trim());
+            
+            // Column 2: User (empty for servers)
+            columns.push('');
+            
+            // Column 3: Make (Dell, Microsoft, etc.)
+            if (i < words.length && words[i].match(/^(Dell|Microsoft|HP|Lenovo)$/)) {
+                columns.push(words[i]);
+                i++;
+            } else {
+                columns.push('');
+            }
+            
+            // Column 4: Serial
+            if (i < words.length) {
+                columns.push(words[i]);
+                i++;
+            } else {
+                columns.push('');
+            }
+            
+            // Column 5: Model (until we hit age number)
+            let model = '';
+            while (i < words.length && !isAgeNumber(words[i])) {
+                model += (model ? ' ' : '') + words[i];
+                i++;
+            }
+            columns.push(model);
+            
+            // Column 6: OS (empty for servers, or could be a server OS)
+            columns.push('');
+            
+            // Column 7: Age
+            if (i < words.length && isAgeNumber(words[i])) {
+                columns.push(words[i]);
+                i++;
+            } else {
+                columns.push('');
+            }
+            
+            // Column 8: Purchased date
+            if (i < words.length && words[i].match(/^\d{4}-\d{2}-\d{2}$/)) {
+                columns.push(words[i]);
+                i++;
+            } else {
+                columns.push('');
+            }
+            
+            // Column 9: Expires date
+            if (i < words.length && words[i].match(/^\d{4}-\d{2}-\d{2}$/)) {
+                columns.push(words[i]);
+                i++;
+            } else {
+                columns.push('');
+            }
+            
+            return columns;
+        }
+
+        function parseWorkstationRow(line) {
+            // Parse workstation data: Asset ID, User, Make, Serial, Model, OS, Age, Purchased, Expires
+            const columns = [];
+            const words = line.split(/\s+/);
+            let i = 0;
+            
+            // Column 1: Asset ID (DFH-, IML-, etc.)
+            if (i < words.length && (words[i].includes('DFH-') || words[i].includes('IML-') || words[i].includes('ILM-') || words[i].includes('WBH-') || words[i].includes('TDC-'))) {
+                columns.push(words[i]);
+                i++;
+            } else {
+                columns.push('');
+            }
+            
+            // Column 2: User (until we hit Dell/Microsoft)
+            let user = '';
+            while (i < words.length && !words[i].match(/^(Dell|Microsoft|HP|Lenovo)$/)) {
+                user += (user ? ' ' : '') + words[i];
+                i++;
+            }
+            columns.push(user);
+            
+            // Column 3: Make
+            if (i < words.length && words[i].match(/^(Dell|Microsoft|HP|Lenovo)$/)) {
+                columns.push(words[i]);
+                i++;
+            } else {
+                columns.push('');
+            }
+            
+            // Column 4: Serial
+            if (i < words.length) {
+                columns.push(words[i]);
+                i++;
+            } else {
+                columns.push('');
+            }
+            
+            // Column 5: Model (until we hit Windows)
+            let model = '';
+            while (i < words.length && words[i] !== 'Windows') {
+                model += (model ? ' ' : '') + words[i];
+                i++;
+            }
+            columns.push(model);
+            
+            // Column 6: OS (Windows version info, until we hit age number)
+            let os = '';
+            while (i < words.length && !isAgeNumber(words[i])) {
+                os += (os ? ' ' : '') + words[i];
+                i++;
+            }
+            columns.push(os);
+            
+            // Column 7: Age
+            if (i < words.length && isAgeNumber(words[i])) {
+                columns.push(words[i]);
+                i++;
+            } else {
+                columns.push('');
+            }
+            
+            // Column 8: Purchased date
+            if (i < words.length && words[i].match(/^\d{4}-\d{2}-\d{2}$/)) {
+                columns.push(words[i]);
+                i++;
+            } else {
+                columns.push('');
+            }
+            
+            // Column 9: Expires date
+            if (i < words.length && words[i].match(/^\d{4}-\d{2}-\d{2}$/)) {
+                columns.push(words[i]);
+                i++;
+            } else {
+                columns.push('');
+            }
+            
+            return columns;
+        }
+
         function parseAutoDetectColumns(lines, headers) {
-            // Try to automatically detect column structure with fixed headers
+            // Fallback: try to automatically detect column structure with fixed headers
             const tableData = [];
             tableData.push(headers); // Use the provided fixed headers
             
@@ -368,153 +533,29 @@
                     continue;
                 }
                 
-                const columns = extractColumnsFromLine(line);
-                if (columns.length > 3) { // Assume meaningful rows have at least 4 columns
-                    // Ensure we have exactly 9 columns to match headers
-                    while (columns.length < headers.length) {
-                        columns.push('');
+                if (isDataRow(line)) {
+                    let rowData;
+                    
+                    if (isServerRow(line)) {
+                        rowData = parseServerRow(line);
+                    } else {
+                        rowData = parseWorkstationRow(line);
                     }
-                    if (columns.length > headers.length) {
-                        columns.splice(headers.length);
+                    
+                    if (rowData && rowData.length >= 6) {
+                        // Ensure we have exactly 9 columns to match headers
+                        while (rowData.length < headers.length) {
+                            rowData.push('');
+                        }
+                        if (rowData.length > headers.length) {
+                            rowData.splice(headers.length);
+                        }
+                        tableData.push(rowData);
                     }
-                    tableData.push(columns);
                 }
             }
             
             return tableData;
-        }
-
-        function extractColumnsFromLine(line) {
-            // Remove symbols and icons (common in PDF headers)
-            let cleanLine = line.replace(/[^\w\s\-\.\/\\:]/g, ' ').replace(/\s+/g, ' ').trim();
-            
-            // For data rows, use more sophisticated parsing
-            if (cleanLine.includes('IML-') || cleanLine.includes('ILM-')) {
-                return parseDataRow(cleanLine);
-            }
-            
-            // Split by multiple spaces (common in PDF table extraction)
-            let columns = cleanLine.split(/\s{2,}/).map(col => col.trim()).filter(col => col.length > 0);
-            
-            // Clean up known symbols and fix common header issues
-            columns = columns.map(col => {
-                // Fix "Workstations" if it got mangled
-                if (col.toLowerCase().includes('workstation')) return 'Workstations';
-                return col;
-            }).filter(col => col.length > 0);
-            
-            // If that doesn't work well, try other methods
-            if (columns.length < 3) {
-                // Try splitting by single spaces and grouping intelligently
-                const words = cleanLine.split(/\s+/);
-                columns = [];
-                let currentCol = '';
-                
-                for (let i = 0; i < words.length; i++) {
-                    const word = words[i];
-                    
-                    // Start new column if we detect patterns
-                    if (i > 0 && (
-                        word.match(/^[A-Z]{2,}/) || // All caps (like IML-*)
-                        word.match(/^\d{4}-\d{2}-\d{2}/) || // Date pattern
-                        word.match(/^Windows|^Dell|^OptiPlex|^Latitude/) // Known values
-                    )) {
-                        if (currentCol.trim()) {
-                            columns.push(currentCol.trim());
-                        }
-                        currentCol = word;
-                    } else {
-                        currentCol += (currentCol ? ' ' : '') + word;
-                    }
-                }
-                
-                if (currentCol.trim()) {
-                    columns.push(currentCol.trim());
-                }
-            }
-            
-            return columns;
-        }
-
-        function parseDataRow(line) {
-            // Custom parser for hardware data rows
-            const columns = [];
-            const words = line.split(/\s+/);
-            let i = 0;
-            
-            // Column 1: Workstation ID (IML- or ILM- pattern)
-            if (i < words.length && (words[i].includes('IML-') || words[i].includes('ILM-'))) {
-                columns.push(words[i]);
-                i++;
-            } else {
-                columns.push('');
-            }
-            
-            // Column 2: User (can be multiple words, until we hit "Dell")
-            let user = '';
-            while (i < words.length && words[i] !== 'Dell') {
-                user += (user ? ' ' : '') + words[i];
-                i++;
-            }
-            columns.push(user);
-            
-            // Column 3: Make (should be "Dell")
-            if (i < words.length && words[i] === 'Dell') {
-                columns.push(words[i]);
-                i++;
-            } else {
-                columns.push('');
-            }
-            
-            // Column 4: Serial (next word after Dell)
-            if (i < words.length) {
-                columns.push(words[i]);
-                i++;
-            } else {
-                columns.push('');
-            }
-            
-            // Column 5: Model (collect words until we hit "Windows")
-            let model = '';
-            while (i < words.length && words[i] !== 'Windows') {
-                model += (model ? ' ' : '') + words[i];
-                i++;
-            }
-            columns.push(model);
-            
-            // Column 6: OS (Windows and version info, until we hit age number 0.0-9.9)
-            let os = '';
-            while (i < words.length && !isAgeNumber(words[i])) {
-                os += (os ? ' ' : '') + words[i];
-                i++;
-            }
-            columns.push(os);
-            
-            // Column 7: Age (decimal number 0.0-9.9)
-            if (i < words.length && isAgeNumber(words[i])) {
-                columns.push(words[i]);
-                i++;
-            } else {
-                columns.push('');
-            }
-            
-            // Column 8: Purchased date (YYYY-MM-DD pattern)
-            if (i < words.length && words[i].match(/^\d{4}-\d{2}-\d{2}$/)) {
-                columns.push(words[i]);
-                i++;
-            } else {
-                columns.push('');
-            }
-            
-            // Column 9: Expires date (YYYY-MM-DD pattern)
-            if (i < words.length && words[i].match(/^\d{4}-\d{2}-\d{2}$/)) {
-                columns.push(words[i]);
-                i++;
-            } else {
-                columns.push('');
-            }
-            
-            return columns;
         }
 
         function isAgeNumber(word) {
