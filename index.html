@@ -1,0 +1,603 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PDF Table Data Extractor</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js"></script>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+        .container {
+            background: white;
+            padding: 30px;
+            border-radius: 10px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        .upload-area {
+            border: 2px dashed #007acc;
+            border-radius: 10px;
+            padding: 40px;
+            text-align: center;
+            margin: 20px 0;
+            background-color: #f8f9fa;
+            transition: all 0.3s ease;
+        }
+        .upload-area:hover {
+            border-color: #0056b3;
+            background-color: #e9ecef;
+        }
+        .upload-area.dragover {
+            border-color: #28a745;
+            background-color: #d4edda;
+        }
+        input[type="file"] {
+            display: none;
+        }
+        .upload-button {
+            background-color: #007acc;
+            color: white;
+            padding: 12px 24px;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 16px;
+            margin: 10px;
+        }
+        .upload-button:hover {
+            background-color: #0056b3;
+        }
+        .download-button {
+            background-color: #28a745;
+            color: white;
+            padding: 12px 24px;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 16px;
+            margin: 10px;
+            display: none;
+        }
+        .download-button:hover {
+            background-color: #218838;
+        }
+        .status {
+            margin: 20px 0;
+            padding: 15px;
+            border-radius: 5px;
+            display: none;
+        }
+        .status.success {
+            background-color: #d4edda;
+            color: #155724;
+            border: 1px solid #c3e6cb;
+        }
+        .status.error {
+            background-color: #f8d7da;
+            color: #721c24;
+            border: 1px solid #f5c6cb;
+        }
+        .status.processing {
+            background-color: #cce5ff;
+            color: #004085;
+            border: 1px solid #99d6ff;
+        }
+        .preview-table {
+            margin: 20px 0;
+            max-height: 400px;
+            overflow: auto;
+            border: 1px solid #ddd;
+            border-radius: 5px;
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 12px;
+        }
+        th, td {
+            border: 1px solid #ddd;
+            padding: 8px;
+            text-align: left;
+        }
+        th {
+            background-color: #f8f9fa;
+            font-weight: bold;
+            position: sticky;
+            top: 0;
+        }
+        .settings {
+            background-color: #f8f9fa;
+            padding: 20px;
+            border-radius: 5px;
+            margin: 20px 0;
+        }
+        .setting-group {
+            margin: 10px 0;
+        }
+        label {
+            display: inline-block;
+            width: 200px;
+            font-weight: bold;
+        }
+        input[type="number"], select {
+            padding: 5px;
+            border: 1px solid #ddd;
+            border-radius: 3px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>PDF Table Data Extractor</h1>
+        <p>Upload a PDF file with tabular data. The tool will skip the first page and extract table data from subsequent pages into CSV format.</p>
+        
+        <div class="settings">
+            <h3>Extraction Settings</h3>
+            <div class="setting-group">
+                <label for="skipPages">Pages to skip:</label>
+                <input type="number" id="skipPages" value="1" min="0" max="10">
+                <small>(Default: 1 - skips cover page)</small>
+            </div>
+            <div class="setting-group">
+                <label for="delimiter">CSV Delimiter:</label>
+                <select id="delimiter">
+                    <option value=",">Comma (,)</option>
+                    <option value=";">Semicolon (;)</option>
+                    <option value="\t">Tab</option>
+                </select>
+            </div>
+        </div>
+
+        <div class="upload-area" id="uploadArea">
+            <h3>📄 Upload PDF File</h3>
+            <p>Drag and drop your PDF file here, or click to select</p>
+            <button class="upload-button" onclick="document.getElementById('fileInput').click()">
+                Choose File
+            </button>
+            <input type="file" id="fileInput" accept=".pdf" onchange="handleFileSelect(event)">
+        </div>
+
+        <div class="status" id="status"></div>
+
+        <div class="preview-table" id="previewTable" style="display: none;"></div>
+
+        <button class="download-button" id="downloadButton" onclick="downloadCSV()">
+            📥 Download CSV
+        </button>
+    </div>
+
+    <script>
+        // Configure PDF.js worker
+        pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+
+        let extractedData = [];
+        let csvContent = '';
+        let originalFileName = '';
+
+        // Drag and drop functionality
+        const uploadArea = document.getElementById('uploadArea');
+        const fileInput = document.getElementById('fileInput');
+
+        uploadArea.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            uploadArea.classList.add('dragover');
+        });
+
+        uploadArea.addEventListener('dragleave', () => {
+            uploadArea.classList.remove('dragover');
+        });
+
+        uploadArea.addEventListener('drop', (e) => {
+            e.preventDefault();
+            uploadArea.classList.remove('dragover');
+            const files = e.dataTransfer.files;
+            if (files.length > 0 && files[0].type === 'application/pdf') {
+                originalFileName = files[0].name; // Store filename for drag & drop
+                handleFile(files[0]);
+            }
+        });
+
+        function handleFileSelect(event) {
+            const file = event.target.files[0];
+            if (file && file.type === 'application/pdf') {
+                originalFileName = file.name; // Store filename for click selection
+                handleFile(file);
+            } else {
+                showStatus('Please select a valid PDF file.', 'error');
+            }
+        }
+
+        function showStatus(message, type) {
+            const status = document.getElementById('status');
+            status.textContent = message;
+            status.className = `status ${type}`;
+            status.style.display = 'block';
+        }
+
+        async function handleFile(file) {
+            showStatus('Processing PDF file...', 'processing');
+            
+            // Store the original filename
+            originalFileName = file.name;
+            
+            try {
+                const arrayBuffer = await file.arrayBuffer();
+                const pdf = await pdfjsLib.getDocument(arrayBuffer).promise;
+                
+                const skipPages = parseInt(document.getElementById('skipPages').value);
+                const totalPages = pdf.numPages;
+                
+                if (skipPages >= totalPages) {
+                    showStatus(`Cannot skip ${skipPages} pages - PDF only has ${totalPages} pages.`, 'error');
+                    return;
+                }
+
+                let allText = '';
+                
+                // Extract text from pages after the skip count
+                for (let pageNum = skipPages + 1; pageNum <= totalPages; pageNum++) {
+                    const page = await pdf.getPage(pageNum);
+                    const textContent = await page.getTextContent();
+                    
+                    // Sort text items by position (top to bottom, left to right)
+                    const sortedItems = textContent.items.sort((a, b) => {
+                        const yDiff = b.transform[5] - a.transform[5]; // Y coordinate (inverted)
+                        if (Math.abs(yDiff) > 5) return yDiff; // Different rows
+                        return a.transform[4] - b.transform[4]; // Same row, sort by X
+                    });
+                    
+                    let pageText = '';
+                    let currentY = null;
+                    
+                    sortedItems.forEach(item => {
+                        const y = Math.round(item.transform[5]);
+                        if (currentY !== null && Math.abs(currentY - y) > 5) {
+                            pageText += '\n'; // New line for different Y positions
+                        }
+                        // Filter out symbols and icons, keep only printable text
+                        const cleanText = item.str.replace(/[\u2600-\u26FF\u2700-\u27BF\uE000-\uF8FF]/g, '').trim();
+                        if (cleanText.length > 0) {
+                            pageText += cleanText + ' ';
+                        }
+                        currentY = y;
+                    });
+                    
+                    allText += pageText + '\n\n';
+                }
+                
+                // Parse the extracted text into table format
+                const tableData = parseTableData(allText);
+                
+                if (tableData.length === 0) {
+                    showStatus('No tabular data found in the PDF. Make sure the PDF contains structured table data.', 'error');
+                    return;
+                }
+                
+                extractedData = tableData;
+                displayPreview(tableData);
+                generateCSV(tableData);
+                
+                showStatus(`Successfully extracted ${tableData.length - 1} rows of data from ${totalPages - skipPages} pages.`, 'success');
+                document.getElementById('downloadButton').style.display = 'inline-block';
+                
+            } catch (error) {
+                console.error('Error processing PDF:', error);
+                showStatus('Error processing PDF file. Please make sure it\'s a valid PDF with text content.', 'error');
+            }
+        }
+
+        function parseTableData(text) {
+            const lines = text.split('\n').filter(line => line.trim().length > 0);
+            const tableData = [];
+            
+            // Use fixed column headers instead of trying to detect them
+            const headers = ['Workstations', 'User', 'Make', 'Serial', 'Model', 'OS', 'Age', 'Purchased', 'Expires'];
+            tableData.push(headers);
+            
+            // Find where the actual data starts by looking for lines with asset IDs (IML- pattern)
+            let dataStartIndex = -1;
+            for (let i = 0; i < lines.length; i++) {
+                const line = lines[i];
+                if (line.includes('IML-') || line.includes('ILM-')) {
+                    dataStartIndex = i;
+                    break;
+                }
+            }
+            
+            if (dataStartIndex === -1) {
+                // Fallback: look for Dell devices
+                for (let i = 0; i < lines.length; i++) {
+                    const line = lines[i].toLowerCase();
+                    if (line.includes('dell') && (line.includes('optiplex') || line.includes('latitude'))) {
+                        dataStartIndex = i;
+                        break;
+                    }
+                }
+            }
+            
+            if (dataStartIndex === -1) {
+                return parseAutoDetectColumns(lines, headers);
+            }
+            
+            // Process data rows
+            for (let i = dataStartIndex; i < lines.length; i++) {
+                const line = lines[i].trim();
+                if (line.length === 0) continue;
+                
+                // Skip lines that look like they're not data rows
+                if (line.toLowerCase().includes('information is deemed') || 
+                    line.toLowerCase().includes('hardware lifecycle') ||
+                    line.toLowerCase().includes('grexo technology')) {
+                    continue;
+                }
+                
+                const rowData = extractColumnsFromLine(line);
+                if (rowData.length >= 6) { // At least 6 columns to be considered a valid data row
+                    // Ensure we have exactly 9 columns to match headers
+                    while (rowData.length < headers.length) {
+                        rowData.push('');
+                    }
+                    if (rowData.length > headers.length) {
+                        rowData.splice(headers.length);
+                    }
+                    tableData.push(rowData);
+                }
+            }
+            
+            return tableData;
+        }
+
+        function parseAutoDetectColumns(lines, headers) {
+            // Try to automatically detect column structure with fixed headers
+            const tableData = [];
+            tableData.push(headers); // Use the provided fixed headers
+            
+            for (const line of lines) {
+                if (line.trim().length === 0) continue;
+                
+                // Skip obvious non-data lines
+                if (line.toLowerCase().includes('information is deemed') || 
+                    line.toLowerCase().includes('hardware lifecycle') ||
+                    line.toLowerCase().includes('grexo technology')) {
+                    continue;
+                }
+                
+                const columns = extractColumnsFromLine(line);
+                if (columns.length > 3) { // Assume meaningful rows have at least 4 columns
+                    // Ensure we have exactly 9 columns to match headers
+                    while (columns.length < headers.length) {
+                        columns.push('');
+                    }
+                    if (columns.length > headers.length) {
+                        columns.splice(headers.length);
+                    }
+                    tableData.push(columns);
+                }
+            }
+            
+            return tableData;
+        }
+
+        function extractColumnsFromLine(line) {
+            // Remove symbols and icons (common in PDF headers)
+            let cleanLine = line.replace(/[^\w\s\-\.\/\\:]/g, ' ').replace(/\s+/g, ' ').trim();
+            
+            // For data rows, use more sophisticated parsing
+            if (cleanLine.includes('IML-') || cleanLine.includes('ILM-')) {
+                return parseDataRow(cleanLine);
+            }
+            
+            // Split by multiple spaces (common in PDF table extraction)
+            let columns = cleanLine.split(/\s{2,}/).map(col => col.trim()).filter(col => col.length > 0);
+            
+            // Clean up known symbols and fix common header issues
+            columns = columns.map(col => {
+                // Fix "Workstations" if it got mangled
+                if (col.toLowerCase().includes('workstation')) return 'Workstations';
+                return col;
+            }).filter(col => col.length > 0);
+            
+            // If that doesn't work well, try other methods
+            if (columns.length < 3) {
+                // Try splitting by single spaces and grouping intelligently
+                const words = cleanLine.split(/\s+/);
+                columns = [];
+                let currentCol = '';
+                
+                for (let i = 0; i < words.length; i++) {
+                    const word = words[i];
+                    
+                    // Start new column if we detect patterns
+                    if (i > 0 && (
+                        word.match(/^[A-Z]{2,}/) || // All caps (like IML-*)
+                        word.match(/^\d{4}-\d{2}-\d{2}/) || // Date pattern
+                        word.match(/^Windows|^Dell|^OptiPlex|^Latitude/) // Known values
+                    )) {
+                        if (currentCol.trim()) {
+                            columns.push(currentCol.trim());
+                        }
+                        currentCol = word;
+                    } else {
+                        currentCol += (currentCol ? ' ' : '') + word;
+                    }
+                }
+                
+                if (currentCol.trim()) {
+                    columns.push(currentCol.trim());
+                }
+            }
+            
+            return columns;
+        }
+
+        function parseDataRow(line) {
+            // Custom parser for hardware data rows
+            const columns = [];
+            const words = line.split(/\s+/);
+            let i = 0;
+            
+            // Column 1: Workstation ID (IML- or ILM- pattern)
+            if (i < words.length && (words[i].includes('IML-') || words[i].includes('ILM-'))) {
+                columns.push(words[i]);
+                i++;
+            } else {
+                columns.push('');
+            }
+            
+            // Column 2: User (can be multiple words, until we hit "Dell")
+            let user = '';
+            while (i < words.length && words[i] !== 'Dell') {
+                user += (user ? ' ' : '') + words[i];
+                i++;
+            }
+            columns.push(user);
+            
+            // Column 3: Make (should be "Dell")
+            if (i < words.length && words[i] === 'Dell') {
+                columns.push(words[i]);
+                i++;
+            } else {
+                columns.push('');
+            }
+            
+            // Column 4: Serial (next word after Dell)
+            if (i < words.length) {
+                columns.push(words[i]);
+                i++;
+            } else {
+                columns.push('');
+            }
+            
+            // Column 5: Model (collect words until we hit "Windows")
+            let model = '';
+            while (i < words.length && words[i] !== 'Windows') {
+                model += (model ? ' ' : '') + words[i];
+                i++;
+            }
+            columns.push(model);
+            
+            // Column 6: OS (Windows and version info, until we hit age number 0.0-9.9)
+            let os = '';
+            while (i < words.length && !isAgeNumber(words[i])) {
+                os += (os ? ' ' : '') + words[i];
+                i++;
+            }
+            columns.push(os);
+            
+            // Column 7: Age (decimal number 0.0-9.9)
+            if (i < words.length && isAgeNumber(words[i])) {
+                columns.push(words[i]);
+                i++;
+            } else {
+                columns.push('');
+            }
+            
+            // Column 8: Purchased date (YYYY-MM-DD pattern)
+            if (i < words.length && words[i].match(/^\d{4}-\d{2}-\d{2}$/)) {
+                columns.push(words[i]);
+                i++;
+            } else {
+                columns.push('');
+            }
+            
+            // Column 9: Expires date (YYYY-MM-DD pattern)
+            if (i < words.length && words[i].match(/^\d{4}-\d{2}-\d{2}$/)) {
+                columns.push(words[i]);
+                i++;
+            } else {
+                columns.push('');
+            }
+            
+            return columns;
+        }
+
+        function isAgeNumber(word) {
+            // Check if word is a decimal number in the age range (0.0-9.9)
+            const match = word.match(/^(\d+(?:\.\d+)?)$/);
+            if (!match) return false;
+            
+            const num = parseFloat(match[1]);
+            return num >= 0.0 && num <= 9.9;
+        }
+
+        function displayPreview(data) {
+            const previewDiv = document.getElementById('previewTable');
+            
+            if (data.length === 0) {
+                previewDiv.style.display = 'none';
+                return;
+            }
+            
+            let html = '<h3>Data Preview</h3><table>';
+            
+            data.forEach((row, index) => {
+                const tag = index === 0 ? 'th' : 'td';
+                html += '<tr>';
+                row.forEach(cell => {
+                    html += `<${tag}>${escapeHtml(cell)}</${tag}>`;
+                });
+                html += '</tr>';
+            });
+            
+            html += '</table>';
+            previewDiv.innerHTML = html;
+            previewDiv.style.display = 'block';
+        }
+
+        function generateCSV(data) {
+            const delimiter = document.getElementById('delimiter').value;
+            const actualDelimiter = delimiter === '\\t' ? '\t' : delimiter;
+            
+            csvContent = data.map(row => 
+                row.map(cell => {
+                    // Escape quotes and wrap in quotes if contains delimiter or quotes
+                    const escaped = cell.replace(/"/g, '""');
+                    return escaped.includes(actualDelimiter) || escaped.includes('"') || escaped.includes('\n') 
+                        ? `"${escaped}"` 
+                        : escaped;
+                }).join(actualDelimiter)
+            ).join('\n');
+        }
+
+        function downloadCSV() {
+            if (!csvContent) {
+                showStatus('No data to download. Please process a PDF first.', 'error');
+                return;
+            }
+            
+            // Generate filename from original PDF name
+            let filename = 'extracted_data.csv';
+            if (originalFileName) {
+                // Remove .pdf extension and add .csv
+                const nameWithoutExt = originalFileName.replace(/\.pdf$/i, '');
+                filename = nameWithoutExt + '.csv';
+            }
+            
+            const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+            const link = document.createElement('a');
+            
+            if (link.download !== undefined) {
+                const url = URL.createObjectURL(blob);
+                link.setAttribute('href', url);
+                link.setAttribute('download', filename);
+                link.style.visibility = 'hidden';
+                document.body.appendChild(link);
+                link.click();
+                document.body.removeChild(link);
+            }
+        }
+
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+    </script>
+</body>
+</html>
