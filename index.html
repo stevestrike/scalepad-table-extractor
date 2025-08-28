@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>ScalePad PDF Data Extractor</title>
+    <title>PDF Table Data Extractor</title>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js"></script>
     <style>
@@ -130,12 +130,16 @@
             border: 1px solid #ddd;
             border-radius: 3px;
         }
+        input[type="checkbox"] {
+            margin: 0 5px;
+        }
     </style>
 </head>
 <body>
     <div class="container">
-        <h1>ScalePad PDF Data Extractor</h1>
-                
+        <h1>PDF Table Data Extractor</h1>
+        <p>Upload a PDF file with tabular data. The tool will skip the first page and extract table data from subsequent pages into CSV format.</p>
+        
         <div class="settings">
             <h3>Extraction Settings</h3>
             <div class="setting-group">
@@ -150,6 +154,11 @@
                     <option value=";">Semicolon (;)</option>
                     <option value="\t">Tab</option>
                 </select>
+            </div>
+            <div class="setting-group">
+                <label for="debugMode">Debug Mode:</label>
+                <input type="checkbox" id="debugMode">
+                <small>(Shows parsing details in console)</small>
             </div>
         </div>
 
@@ -294,12 +303,20 @@
         function parseTableData(text) {
             const lines = text.split('\n').filter(line => line.trim().length > 0);
             const tableData = [];
+            const debugMode = document.getElementById('debugMode').checked;
             
             // Use fixed column headers for combined servers and workstations
             const headers = ['Asset ID', 'User', 'Make', 'Serial', 'Model', 'OS', 'Age', 'Purchased', 'Expires'];
             tableData.push(headers);
             
             let currentSection = null; // 'servers' or 'workstations'
+            let processedRows = 0;
+            let skippedRows = 0;
+            
+            if (debugMode) {
+                console.log('=== DEBUG MODE: Parsing PDF Text ===');
+                console.log(`Total lines to process: ${lines.length}`);
+            }
             
             // Process each line to find data rows
             for (let i = 0; i < lines.length; i++) {
@@ -317,10 +334,12 @@
                 const lowerLine = line.toLowerCase();
                 if (lowerLine.includes('servers') && (lowerLine.includes('make') || lowerLine.includes('serial'))) {
                     currentSection = 'servers';
+                    if (debugMode) console.log(`Found servers section at line ${i}`);
                     continue;
                 }
                 if (lowerLine.includes('workstations') && (lowerLine.includes('user') || lowerLine.includes('make'))) {
                     currentSection = 'workstations';
+                    if (debugMode) console.log(`Found workstations section at line ${i}`);
                     continue;
                 }
                 
@@ -330,11 +349,13 @@
                     
                     if (currentSection === 'servers' || isServerRow(line)) {
                         rowData = parseServerRow(line);
+                        if (debugMode) console.log(`Parsed as server: ${line.substring(0, 50)}...`);
                     } else {
                         rowData = parseWorkstationRow(line);
+                        if (debugMode) console.log(`Parsed as workstation: ${line.substring(0, 50)}...`);
                     }
                     
-                    if (rowData && rowData.length >= 6) {
+                    if (rowData && rowData.length >= 4) { // Reduced from 6 to be more inclusive
                         // Ensure we have exactly 9 columns to match headers
                         while (rowData.length < headers.length) {
                             rowData.push('');
@@ -343,19 +364,48 @@
                             rowData.splice(headers.length);
                         }
                         tableData.push(rowData);
+                        processedRows++;
+                        if (debugMode) console.log(`Added row ${processedRows}:`, rowData);
+                    } else {
+                        skippedRows++;
+                        if (debugMode) console.log(`Skipped row (${rowData?.length || 0} columns): ${line.substring(0, 50)}...`);
                     }
+                } else if (debugMode) {
+                    console.log(`Not a data row: ${line.substring(0, 50)}...`);
                 }
+            }
+            
+            if (debugMode) {
+                console.log(`=== DEBUG SUMMARY ===`);
+                console.log(`Processed rows: ${processedRows}`);
+                console.log(`Skipped rows: ${skippedRows}`);
+                console.log(`Total data rows in output: ${tableData.length - 1}`);
             }
             
             return tableData;
         }
 
         function isDataRow(line) {
-            // Check if line contains asset IDs or manufacturer names
-            return line.includes('DFH-') || line.includes('IML-') || line.includes('ILM-') || 
-                   line.includes('WBH-') || line.includes('TDC-') ||
-                   (line.includes('Dell') && (line.includes('OptiPlex') || line.includes('Latitude') || line.includes('XPS') || line.includes('PowerEdge'))) ||
-                   (line.includes('Microsoft') && line.includes('Surface'));
+            // Check if line contains asset IDs or manufacturer names (more inclusive)
+            const hasAssetID = line.includes('DFH-') || line.includes('IML-') || line.includes('ILM-') || 
+                              line.includes('WBH-') || line.includes('TDC-') || line.match(/[A-Z]{2,}-[A-Z0-9]/);
+            
+            const hasDellDevice = line.includes('Dell') && 
+                                 (line.includes('OptiPlex') || line.includes('Latitude') || line.includes('XPS') || 
+                                  line.includes('PowerEdge') || line.includes('Pro ') || line.match(/\d{4}-\d{2}-\d{2}/));
+            
+            const hasMicrosoftDevice = line.includes('Microsoft') && 
+                                      (line.includes('Surface') || line.match(/\d{4}-\d{2}-\d{2}/));
+            
+            // Also check for lines with dates (likely data rows)
+            const hasDatePattern = line.match(/\d{4}-\d{2}-\d{2}/) && 
+                                  (line.includes('Dell') || line.includes('Microsoft') || line.includes('HP'));
+            
+            // Check for Windows OS pattern (common in workstation rows)
+            const hasWindowsPattern = line.includes('Windows') && line.match(/\d+(\.\d+)?/) && 
+                                     line.match(/\d{4}-\d{2}-\d{2}/);
+            
+            return hasAssetID || hasDellDevice || hasMicrosoftDevice || hasDatePattern || hasWindowsPattern;
         }
 
         function isServerRow(line) {
@@ -541,7 +591,7 @@
                         rowData = parseWorkstationRow(line);
                     }
                     
-                    if (rowData && rowData.length >= 6) {
+                    if (rowData && rowData.length >= 4) { // Reduced from 6 to be more inclusive
                         // Ensure we have exactly 9 columns to match headers
                         while (rowData.length < headers.length) {
                             rowData.push('');
